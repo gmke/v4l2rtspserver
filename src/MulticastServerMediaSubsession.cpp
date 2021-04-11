@@ -17,39 +17,58 @@ MulticastServerMediaSubsession* MulticastServerMediaSubsession::createNew(UsageE
 									, struct in_addr destinationAddress
 									, Port rtpPortNum, Port rtcpPortNum
 									, int ttl
-									, StreamReplicator* replicator
-									, const std::string& format) 
+									, StreamReplicator* replicator) 
 { 
+	return new MulticastServerMediaSubsession(env, destinationAddress, rtpPortNum, rtcpPortNum, ttl , replicator);
+}
+		
+
+RTPSink* MulticastServerMediaSubsession::createRtpSink(UsageEnvironment& env
+						, struct in_addr destinationAddress
+						, Port rtpPortNum, Port rtcpPortNum
+						, int ttl
+						, StreamReplicator* replicator) {
 	// Create a source
 	FramedSource* source = replicator->createStreamReplica();			
-	FramedSource* videoSource = createSource(env, source, format);
+	FramedSource* videoSource = createSource(env, source, m_format);
 
 	// Create RTP/RTCP groupsock
-	Groupsock* rtpGroupsock = new Groupsock(env, destinationAddress, rtpPortNum, ttl);
-	Groupsock* rtcpGroupsock = new Groupsock(env, destinationAddress, rtcpPortNum, ttl);
+#if LIVEMEDIA_LIBRARY_VERSION_INT	<	1607644800
+	struct in_addr groupAddress = destinationAddress;
+#else
+	struct sockaddr_storage groupAddress;
+	groupAddress.ss_family = AF_INET;
+  	((struct sockaddr_in&)groupAddress).sin_addr = destinationAddress;
+#endif
+	Groupsock* rtpGroupsock = new Groupsock(env, groupAddress, rtpPortNum, ttl);
 
 	// Create a RTP sink
-	RTPSink* videoSink = createSink(env, rtpGroupsock, 96, format, dynamic_cast<V4L2DeviceSource*>(replicator->inputSource()));
+	m_rtpSink = createSink(env, rtpGroupsock, 96, m_format, dynamic_cast<V4L2DeviceSource*>(replicator->inputSource()));
 
 	// Create 'RTCP instance'
 	const unsigned maxCNAMElen = 100;
 	unsigned char CNAME[maxCNAMElen+1];
 	gethostname((char*)CNAME, maxCNAMElen);
 	CNAME[maxCNAMElen] = '\0'; 
-	RTCPInstance* rtcpInstance = RTCPInstance::createNew(env, rtcpGroupsock,  500, CNAME, videoSink, NULL);
+	Groupsock* rtcpGroupsock = new Groupsock(env, groupAddress, rtcpPortNum, ttl);
+	m_rtcpInstance = RTCPInstance::createNew(env, rtcpGroupsock,  500, CNAME, m_rtpSink, NULL);
 
 	// Start Playing the Sink
-	videoSink->startPlaying(*videoSource, NULL, NULL);
-	
-	return new MulticastServerMediaSubsession(replicator, videoSink, rtcpInstance);
+	m_rtpSink->startPlaying(*videoSource, NULL, NULL);							
+
+	return m_rtpSink;
 }
-		
+
 char const* MulticastServerMediaSubsession::sdpLines() 
 {
 	if (m_SDPLines.empty())
 	{
-		// Ugly workaround to give SPS/PPS that are get from the RTPSink 
+		// Ugly workaround to give SPS/PPS that are get from the RTPSink
+#if LIVEMEDIA_LIBRARY_VERSION_INT < 1610928000
 		m_SDPLines.assign(PassiveServerMediaSubsession::sdpLines());
+#else		 
+		m_SDPLines.assign(PassiveServerMediaSubsession::sdpLines(AF_INET));
+#endif		
 		m_SDPLines.append(getAuxSDPLine(m_rtpSink,NULL));
 	}
 	return m_SDPLines.c_str();

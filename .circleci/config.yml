@@ -19,15 +19,43 @@ jobs:
           paths:
             - distrib 
 
-  build_rpi:
+  build_rpi_armv6:
     <<: *defaults
+
+    environment:
+      TAR_OPTIONS: --no-same-owner
+      CROSSCOMPILER: https://sourceforge.net/projects/raspberry-pi-cross-compilers/files/Raspberry%20Pi%20GCC%20Cross-Compiler%20Toolchains/Buster/GCC%2010.2.0/Raspberry%20Pi%201%2C%20Zero/cross-gcc-10.2.0-pi_0-1.tar.gz
 
     steps:
       - checkout
       - run: apt-get update; apt-get install -y --no-install-recommends cmake autoconf automake libtool git make pkg-config
-      - run: git clone --depth 1 https://github.com/raspberrypi/tools.git rpi_tools 
-      - run: echo 'export PATH=${CIRCLE_WORKING_DIRECTORY}/rpi_tools/arm-bcm2708/gcc-linaro-arm-linux-gnueabihf-raspbian-x64/bin:$PATH' >> $BASH_ENV
-      - run: cmake -DCMAKE_TOOLCHAIN_FILE=${CIRCLE_WORKING_DIRECTORY}/raspberry.toolchain . && make
+      - run: 
+          command: wget -qO- ${CROSSCOMPILER} | tar xz -C /opt 
+          no_output_timeout: 30m
+      - run: echo "export PATH=$(ls -d /opt/cross-pi-gcc-*/bin):\$PATH" >> $BASH_ENV
+      - run: cmake -DCMAKE_SYSTEM_PROCESSOR=armv6l -DCMAKE_TOOLCHAIN_FILE=${CIRCLE_WORKING_DIRECTORY}/raspberry.toolchain . && make
+      - run: cpack .
+      - run: mkdir -p /distrib && cp *.deb /distrib 
+      - persist_to_workspace:
+          root: /
+          paths:
+            - distrib 
+
+  build_rpi_armv7:
+    <<: *defaults
+
+    environment:
+      TAR_OPTIONS: --no-same-owner
+      CROSSCOMPILER: https://sourceforge.net/projects/raspberry-pi-cross-compilers/files/Raspberry%20Pi%20GCC%20Cross-Compiler%20Toolchains/Buster/GCC%2010.2.0/Raspberry%20Pi%202%2C%203/cross-gcc-10.2.0-pi_2-3.tar.gz
+
+    steps:
+      - checkout
+      - run: apt-get update; apt-get install -y --no-install-recommends cmake autoconf automake libtool git make pkg-config
+      - run: 
+          command: wget -qO- ${CROSSCOMPILER} | tar xz -C /opt 
+          no_output_timeout: 30m
+      - run: echo "export PATH=$(ls -d /opt/cross-pi-gcc-*/bin):\$PATH" >> $BASH_ENV
+      - run: cmake -DCMAKE_SYSTEM_PROCESSOR=armv7 -DCMAKE_TOOLCHAIN_FILE=${CIRCLE_WORKING_DIRECTORY}/raspberry.toolchain . && make
       - run: cpack .
       - run: mkdir -p /distrib && cp *.deb /distrib 
       - persist_to_workspace:
@@ -42,6 +70,20 @@ jobs:
       - checkout
       - run: apt-get update; apt-get install -y --no-install-recommends cmake autoconf automake libtool git make g++-mips-linux-gnu pkg-config
       - run: cmake -DCMAKE_TOOLCHAIN_FILE=${CIRCLE_WORKING_DIRECTORY}/mips.toolchain . && make
+      - run: cpack .
+      - run: mkdir -p /distrib && cp *.deb /distrib 
+      - persist_to_workspace:
+          root: /
+          paths:
+            - distrib 
+
+  build_arm64:
+    <<: *defaults
+
+    steps:
+      - checkout
+      - run: apt-get update; apt-get install -y --no-install-recommends cmake autoconf automake libtool git make gcc-aarch64-linux-gnu g++-aarch64-linux-gnu pkg-config
+      - run: cmake -DCMAKE_SYSTEM_PROCESSOR=arm64 -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY . && make
       - run: cpack .
       - run: mkdir -p /distrib && cp *.deb /distrib 
       - persist_to_workspace:
@@ -64,12 +106,11 @@ jobs:
     steps:
       - attach_workspace:
           at: /
-      - run: curl https://storage.googleapis.com/golang/go1.8.linux-amd64.tar.gz | tar -C /usr/local -xzf -
-      - run: echo 'export PATH=/usr/local/go/bin:/root/go/bin:$PATH' >> $BASH_ENV      
+      - run: apt-get update; apt-get install -y --no-install-recommends golang      
       - run: go get github.com/tcnksm/ghr
       - deploy:
           name: "Deploy to Github"
-          command: ghr -t $GITHUB_TOKEN -u $CIRCLE_PROJECT_USERNAME -r $CIRCLE_PROJECT_REPONAME $CIRCLE_TAG /distrib
+          command: $(go env GOPATH)/bin/ghr -t $GITHUB_TOKEN -u $CIRCLE_PROJECT_USERNAME -r $CIRCLE_PROJECT_REPONAME $CIRCLE_TAG /distrib
 
   # -------------------------------------
   # publish docker amd64
@@ -120,6 +161,22 @@ jobs:
             docker push $CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME:${TAG}-arm32v6
 
   # -------------------------------------
+  # publish docker arm
+  # -------------------------------------
+  publish_docker_linuxarm64:
+    machine:
+      docker_layer_caching: false
+    steps:
+      - checkout  
+      - run: git submodule update --init
+      - run:
+          command: |
+            export TAG=${CIRCLE_TAG:-latest}
+            docker login --username=$DOCKERHUB_USER --password=$DOCKERHUB_PASS
+            docker build --pull -t $CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME:${TAG}-arm64 -f Dockerfile.arm64 . 
+            docker push $CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME:${TAG}-arm64
+
+  # -------------------------------------
   # publish docker manifest
   # -------------------------------------
   publish_docker_multiarch:
@@ -134,10 +191,11 @@ jobs:
             docker login --username=$DOCKERHUB_USER --password=$DOCKERHUB_PASS
             export TAG=${CIRCLE_TAG:-latest}
             echo "create manifest"
-            docker manifest create --amend $CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME:${TAG} $CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME:${TAG}-amd64 $CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME:${TAG}-arm32v7 $CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME:${TAG}-arm32v6
+            docker manifest create --amend $CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME:${TAG} $CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME:${TAG}-amd64 $CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME:${TAG}-arm32v7 $CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME:${TAG}-arm32v6 $CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME:${TAG}-arm64
             docker manifest annotate $CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME:${TAG} $CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME:${TAG}-amd64 --os linux --arch amd64
             docker manifest annotate $CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME:${TAG} $CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME:${TAG}-arm32v7 --os linux --arch arm --variant v7
             docker manifest annotate $CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME:${TAG} $CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME:${TAG}-arm32v6 --os linux --arch arm --variant v6l
+            docker manifest annotate $CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME:${TAG} $CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME:${TAG}-arm64 --os linux --arch arm64
             docker manifest inspect $CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME:${TAG}
             echo "push manifest"
             docker manifest push $CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME:${TAG} -p
@@ -151,27 +209,39 @@ workflows:
           filters:
             tags:
               only: /.*/      
-      - build_rpi:
+      - build_rpi_armv6:
           filters:
             tags:
-              only: /.*/      
+              only: /.*/   
+      - build_rpi_armv7:
+          filters:
+            tags:
+              only: /.*/                    
       - build_mips:
           filters:
             tags:
-              only: /.*/      
+              only: /.*/    
+      - build_arm64:          
+          filters:
+            tags:
+              only: /.*/    
       - store_artifact:
           requires:
             - build_x86_64
-            - build_rpi
+            - build_rpi_armv6
+            - build_rpi_armv7
             - build_mips
+            - build_arm64
           filters:
             tags:
               only: /.*/      
       - github_release:
           requires:
             - build_x86_64
-            - build_rpi
+            - build_rpi_armv6
+            - build_rpi_armv7
             - build_mips
+            - build_arm64
           filters:
             branches:
               ignore: /.*/
@@ -192,11 +262,16 @@ workflows:
           filters:
             tags:
               only: /.*/            
+      - publish_docker_linuxarm64:
+          filters:
+            tags:
+              only: /.*/            
       - publish_docker_multiarch:
           requires:
             - publish_docker_linuxamd64
             - publish_docker_linuxarm32v7
             - publish_docker_linuxarm32v6
+            - publish_docker_linuxarm64
           filters:
             tags:
               only: /.*/        

@@ -14,13 +14,14 @@
 // -----------------------------------------
 //    ServerMediaSubsession for Unicast
 // -----------------------------------------
-UnicastServerMediaSubsession* UnicastServerMediaSubsession::createNew(UsageEnvironment& env, StreamReplicator* replicator, const std::string& format) 
+UnicastServerMediaSubsession* UnicastServerMediaSubsession::createNew(UsageEnvironment& env, StreamReplicator* replicator) 
 { 
-	return new UnicastServerMediaSubsession(env,replicator,format);
+	return new UnicastServerMediaSubsession(env,replicator);
 }
 					
 FramedSource* UnicastServerMediaSubsession::createNewStreamSource(unsigned clientSessionId, unsigned& estBitrate)
 {
+	estBitrate = 500;
 	FramedSource* source = m_replicator->createStreamReplica();
 	return createSource(envir(), source, m_format);
 }

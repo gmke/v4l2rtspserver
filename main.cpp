@@ -29,15 +29,11 @@
 #include "logger.h"
 
 #include "V4l2Device.h"
-#include "V4l2Capture.h"
 #include "V4l2Output.h"
 
 #include "DeviceSourceFactory.h"
 #include "V4l2RTSPServer.h"
 
-#ifdef HAVE_ALSA
-#include "ALSACapture.h"
-#endif
 
 // -----------------------------------------
 //    signal handler
@@ -119,96 +115,9 @@ snd_pcm_format_t decodeAudioFormat(const std::string& fmt)
 	}
 	return audioFmt;
 }
-
-/* ---------------------------------------------------------------------------
-**  get a "deviceid" from uevent sys file
-** -------------------------------------------------------------------------*/
-std::string getDeviceId(const std::string& evt) {
-    std::string deviceid;
-    std::istringstream f(evt);
-    std::string key;
-    while (getline(f, key, '=')) {
-            std::string value;
-	    if (getline(f, value)) {
-		    if ( (key =="PRODUCT") || (key == "PCI_SUBSYS_ID") ) {
-			    deviceid = value;
-			    break;
-		    }
-	    }
-    }
-    return deviceid;
-}
-
-std::string  getV4l2Alsa(const std::string& v4l2device) {
-	std::string audioDevice(v4l2device);
-	
-	std::map<std::string,std::string> videodevices;
-	std::string video4linuxPath("/sys/class/video4linux");
-	DIR *dp = opendir(video4linuxPath.c_str());
-	if (dp != NULL) {
-		struct dirent *entry = NULL;
-		while((entry = readdir(dp))) {
-			std::string devicename;
-			std::string deviceid;
-			if (strstr(entry->d_name,"video") == entry->d_name) {
-				std::string ueventPath(video4linuxPath);
-				ueventPath.append("/").append(entry->d_name).append("/device/uevent");
-				std::ifstream ifsd(ueventPath.c_str());
-				deviceid = std::string(std::istreambuf_iterator<char>{ifsd}, {});
-				deviceid.erase(deviceid.find_last_not_of("\n")+1);
-			}
-
-			if (!deviceid.empty()) {
-				videodevices[entry->d_name] = getDeviceId(deviceid);
-			}
-		}
-		closedir(dp);
-	}
-
-	std::map<std::string,std::string> audiodevices;
-	int rcard = -1;
-	while ( (snd_card_next(&rcard) == 0) && (rcard>=0) ) {
-		void **hints = NULL;
-		if (snd_device_name_hint(rcard, "pcm", &hints) >= 0) {
-			void **str = hints;
-			while (*str) {				
-				std::ostringstream os;
-				os << "/sys/class/sound/card" << rcard << "/device/uevent";
-
-				std::ifstream ifs(os.str().c_str());
-				std::string deviceid = std::string(std::istreambuf_iterator<char>{ifs}, {});
-				deviceid.erase(deviceid.find_last_not_of("\n")+1);
-				deviceid = getDeviceId(deviceid);
-
-				if (!deviceid.empty()) {
-					if (audiodevices.find(deviceid) == audiodevices.end()) {
-						std::string audioname = snd_device_name_get_hint(*str, "NAME");
-						audiodevices[deviceid] = audioname;
-					}
-				}
-
-				str++;
-			}
-
-			snd_device_name_free_hint(hints);
-		}
-	}
-
-	auto deviceId  = videodevices.find(getDeviceName(v4l2device));
-	if (deviceId != videodevices.end()) {
-		auto audioDeviceIt = audiodevices.find(deviceId->second);
-		
-		if (audioDeviceIt != audiodevices.end()) {
-			audioDevice = audioDeviceIt->second;
-			std::cout <<  v4l2device << "=>" << audioDevice << std::endl;			
-		}
-	}
-	
-	
-	return audioDevice;
-}
 #endif
 
+		
 // -----------------------------------------
 //    entry point
 // -----------------------------------------
@@ -227,8 +136,8 @@ int main(int argc, char** argv)
 	bool multicast = false;
 	int verbose = 0;
 	std::string outputFile;
-	V4l2Access::IoType ioTypeIn  = V4l2Access::IOTYPE_MMAP;
-	V4l2Access::IoType ioTypeOut = V4l2Access::IOTYPE_MMAP;
+	V4l2IoType ioTypeIn  = IOTYPE_MMAP;
+	V4l2IoType ioTypeOut = IOTYPE_MMAP;
 	int openflags = O_RDWR | O_NONBLOCK; 
 	std::string url = "unicast";
 	std::string murl = "multicast";
@@ -255,7 +164,7 @@ int main(int argc, char** argv)
 
 	// decode parameters
 	int c = 0;     
-	while ((c = getopt (argc, argv, "v::Q:O:b:" "I:P:p:m:u:M:ct:S::" "R:U:" "rwBsf::F:W:H:G:" "A:C:a:" "Vh")) != -1)
+	while ((c = getopt (argc, argv, "v::Q:O:b:" "I:P:p:m::u:M:ct:S::" "R:U:" "rwBsf::F:W:H:G:" "A:C:a:" "Vh")) != -1)
 	{
 		switch (c)
 		{
@@ -269,7 +178,7 @@ int main(int argc, char** argv)
 			case 'P':	rtspPort                = atoi(optarg); break;
 			case 'p':	rtspOverHTTPPort        = atoi(optarg); break;
 			case 'u':	url                     = optarg; break;
-			case 'm':	multicast = true; murl  = optarg; break;
+			case 'm':	multicast = true; murl  = optarg ? optarg : murl; break;
 			case 'M':	multicast = true; maddr = optarg; break;
 			case 'c':	repeatConfig            = false; break;
 			case 't':	timeout                 = atoi(optarg); break;
@@ -280,8 +189,8 @@ int main(int argc, char** argv)
 			case 'U':       userPasswordList.push_back(optarg); break;
 			
 			// V4L2
-			case 'r':	ioTypeIn  = V4l2Access::IOTYPE_READWRITE; break;
-			case 'w':	ioTypeOut = V4l2Access::IOTYPE_READWRITE; break;	
+			case 'r':	ioTypeIn  = IOTYPE_READWRITE; break;
+			case 'w':	ioTypeOut = IOTYPE_READWRITE; break;	
 			case 'B':	openflags = O_RDWR; break;	
 			case 's':	useThread =  false; break;
 			case 'f':	format    = V4l2Device::fourcc(optarg); if (format) {videoformatList.push_back(format);};  break;
@@ -398,10 +307,9 @@ int main(int argc, char** argv)
 		destinationAddress.s_addr = chooseRandomIPv4SSMAddress(*rtspServer.env());
 		unsigned short rtpPortNum = 20000;
 		unsigned short rtcpPortNum = rtpPortNum+1;
-		unsigned char ttl = 5;
 		decodeMulticastUrl(maddr, destinationAddress, rtpPortNum, rtcpPortNum);	
 
-		V4l2Output* out = NULL;
+		std::list<V4l2Output*> outList;
 		int nbSource = 0;
 		std::list<std::string>::iterator devIt;
 		for ( devIt=devList.begin() ; devIt!=devList.end() ; ++devIt)
@@ -413,132 +321,47 @@ int main(int argc, char** argv)
 			decodeDevice(deviceName, videoDev, audioDev);
 			
 			std::string baseUrl;
+			std::string output(outputFile);
 			if (devList.size() > 1)
 			{
 				baseUrl = getDeviceName(videoDev);
-				baseUrl.append("/");
-			}	
-			StreamReplicator* videoReplicator = NULL;
-			std::string rtpVideoFormat;
-			if (!videoDev.empty())
-			{
-				// Init video capture
-				LOG(NOTICE) << "Create V4L2 Source..." << videoDev;
-				
-				V4L2DeviceParameters param(videoDev.c_str(), videoformatList, width, height, fps, verbose, openflags);
-				V4l2Capture* videoCapture = V4l2Capture::create(param, ioTypeIn);
-				if (videoCapture)
-				{
-					int outfd = -1;
-					
-					if (!outputFile.empty())
-					{
-						V4L2DeviceParameters outparam(outputFile.c_str(), videoCapture->getFormat(), videoCapture->getWidth(), videoCapture->getHeight(), 0,verbose);
-						out = V4l2Output::create(outparam, ioTypeOut);
-						if (out != NULL)
-						{
-							outfd = out->getFd();
-						}
-					}
-					
-					rtpVideoFormat.assign(V4l2RTSPServer::getVideoRtpFormat(videoCapture->getFormat()));
-					if (rtpVideoFormat.empty()) {
-						LOG(FATAL) << "No Streaming format supported for device " << videoDev;
-						delete videoCapture;
-					} else {
-						LOG(NOTICE) << "Create Source ..." << videoDev;
-						videoReplicator = DeviceSourceFactory::createStreamReplicator(rtspServer.env(), videoCapture->getFormat(), new DeviceCaptureAccess<V4l2Capture>(videoCapture), queueSize, useThread, outfd, repeatConfig);
-						if (videoReplicator == NULL) 
-						{
-							LOG(FATAL) << "Unable to create source for device " << videoDev;
-							delete videoCapture;
-						}
-					}
-				}
+				baseUrl.append("_");
+				output.append(getDeviceName(videoDev));
+			}
+
+			V4l2Output* out = NULL;
+			V4L2DeviceParameters inParam(videoDev.c_str(), videoformatList, width, height, fps, ioTypeIn, verbose, openflags);
+			StreamReplicator* videoReplicator = rtspServer.CreateVideoReplicator( 
+					inParam,
+					queueSize, useThread, repeatConfig,
+					output, ioTypeOut, out);
+			if (out != NULL) {
+				outList.push_back(out);
 			}
 					
 			// Init Audio Capture
 			StreamReplicator* audioReplicator = NULL;
-			std::string rtpAudioFormat;
 #ifdef HAVE_ALSA
-			if (!audioDev.empty())
-			{
-				// find the ALSA device associated with the V4L2 device
-				audioDev = getV4l2Alsa(audioDev);
-			
-				// Init audio capture
-				LOG(NOTICE) << "Create ALSA Source..." << audioDev;
-				
-				ALSACaptureParameters param(audioDev.c_str(), audioFmtList, audioFreq, audioNbChannels, verbose);
-				ALSACapture* audioCapture = ALSACapture::createNew(param);
-				if (audioCapture) 
-				{
-					rtpAudioFormat.assign(V4l2RTSPServer::getAudioRtpFormat(audioCapture->getFormat(),audioCapture->getSampleRate(), audioCapture->getChannels()));
-
-					audioReplicator = DeviceSourceFactory::createStreamReplicator(rtspServer.env(), 0, new DeviceCaptureAccess<ALSACapture>(audioCapture), queueSize, useThread);
-					if (audioReplicator == NULL) 
-					{
-						LOG(FATAL) << "Unable to create source for device " << audioDev;
-						delete audioCapture;
-					}
-				}
-			}		
+			audioReplicator = rtspServer.CreateAudioReplicator(
+					audioDev, audioFmtList, audioFreq, audioNbChannels, verbose,
+					queueSize, useThread);		
 #endif
 					
 										
 			// Create Multicast Session
 			if (multicast)						
 			{		
-				LOG(NOTICE) << "RTP  address " << inet_ntoa(destinationAddress) << ":" << rtpPortNum;
-				LOG(NOTICE) << "RTCP address " << inet_ntoa(destinationAddress) << ":" << rtcpPortNum;
-			
-				std::list<ServerMediaSubsession*> subSession;						
-				if (videoReplicator)
-				{
-					subSession.push_back(MulticastServerMediaSubsession::createNew(*rtspServer.env(), destinationAddress, Port(rtpPortNum), Port(rtcpPortNum), ttl, videoReplicator, rtpVideoFormat));					
-					// increment ports for next sessions
-					rtpPortNum+=2;
-					rtcpPortNum+=2;
-				}
-				
-				if (audioReplicator)
-				{
-					subSession.push_back(MulticastServerMediaSubsession::createNew(*rtspServer.env(), destinationAddress, Port(rtpPortNum), Port(rtcpPortNum), ttl, audioReplicator, rtpAudioFormat));				
-					
-					// increment ports for next sessions
-					rtpPortNum+=2;
-					rtcpPortNum+=2;
-				}
-				nbSource += rtspServer.addSession(baseUrl+murl, subSession);																
+				nbSource += rtspServer.AddMulticastSession(baseUrl+murl, destinationAddress, rtpPortNum, rtcpPortNum, videoReplicator, audioReplicator);
 			}
 			
 			// Create HLS Session					
 			if (hlsSegment > 0)
 			{
-				std::list<ServerMediaSubsession*> subSession;
-				if (videoReplicator)
-				{
-					subSession.push_back(TSServerMediaSubsession::createNew(*rtspServer.env(), videoReplicator, rtpVideoFormat, audioReplicator, rtpAudioFormat, hlsSegment));				
-				}
-				nbSource += rtspServer.addSession(baseUrl+tsurl, subSession);
-				
-				struct in_addr ip;
-				ip.s_addr = ourIPAddress(*rtspServer.env());
-				LOG(NOTICE) << "HLS       http://" << inet_ntoa(ip) << ":" << rtspPort << "/" << baseUrl+tsurl << ".m3u8";
-				LOG(NOTICE) << "MPEG-DASH http://" << inet_ntoa(ip) << ":" << rtspPort << "/" << baseUrl+tsurl << ".mpd";
+				nbSource += rtspServer.AddHlsSession(baseUrl+tsurl, hlsSegment, videoReplicator, audioReplicator);
 			}
 			
-			// Create Unicast Session					
-			std::list<ServerMediaSubsession*> subSession;
-			if (videoReplicator)
-			{
-				subSession.push_back(UnicastServerMediaSubsession::createNew(*rtspServer.env(), videoReplicator, rtpVideoFormat));				
-			}
-			if (audioReplicator)
-			{
-				subSession.push_back(UnicastServerMediaSubsession::createNew(*rtspServer.env(), audioReplicator, rtpAudioFormat));				
-			}
-			nbSource += rtspServer.addSession(baseUrl+url, subSession);				
+			// Create Unicast Session
+			nbSource += rtspServer.AddUnicastSession(baseUrl+url, videoReplicator, audioReplicator);		
 		}
 
 		if (nbSource>0)
@@ -549,9 +372,11 @@ int main(int argc, char** argv)
 			LOG(NOTICE) << "Exiting....";			
 		}
 
-		if (out)
+		while (!outList.empty())
 		{
+			V4l2Output* out = outList.back();
 			delete out;
+			outList.pop_back();
 		}
 	}
 	

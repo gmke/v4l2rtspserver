@@ -10,6 +10,8 @@ set(LIVE555CFLAGS -DBSD=1 -DSOCKLEN_T=socklen_t -D_FILE_OFFSET_BITS=64 -D_LARGEF
 
 set(CMAKE_CXX_STANDARD 11)
 
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMake/")
+
 # set version based on git
 find_package(Git)
 if(GIT_FOUND)
@@ -40,17 +42,6 @@ set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 find_package (Threads)
 target_link_libraries (${PROJECT_NAME} Threads::Threads) 
 
-#ALSA
-if (ALSA)
-find_package(ALSA QUIET)
-if (ALSA_LIBRARY)
-	message(STATUS "Alsa available")
-	add_definitions(-DHAVE_ALSA)
-        target_link_libraries (${PROJECT_NAME} ${ALSA_LIBRARY}) 
-	
-	SET(CPACK_DEBIAN_PACKAGE_DEPENDS ${CPACK_DEBIAN_PACKAGE_DEPENDS}libasound2-dev,)	
-endif (ALSA_LIBRARY)
-endif()
 
 # LOG4CPP
 find_library(LOG4CPP_LIBRARY NAMES log4cpp)
@@ -62,31 +53,55 @@ if (LOG4CPP_LIBRARY)
 	SET(CPACK_DEBIAN_PACKAGE_DEPENDS ${CPACK_DEBIAN_PACKAGE_DEPENDS}liblog4cpp5-dev,)
 endif ()
 
+
+# live555
+find_package(LiveMedia)
+find_package(UsageEnvironment)
+find_package(BasicUsageEnvironment)
+find_package(GroupSock)
+if (LIBLIVEMEDIA_FOUND AND LIBBASICUSAGEENVIRONMENT_FOUND AND LIBUSAGEENVIRONMENT_FOUND AND LIBGROUPSOCK_FOUND)
+    message(STATUS "live555 loaded")
+    set(LIVEINCLUDE ${LIBLIVEMEDIA_INCLUDE_DIR} ${LIBBASICUSAGEENVIRONMENT_INCLUDE_DIR} ${LIBUSAGEENVIRONMENT_INCLUDE_DIR} ${LIBGROUPSOCK_INCLUDE_DIR})
+    target_link_libraries (${PROJECT_NAME} liveMedia UsageEnvironment BasicUsageEnvironment groupsock) 
+    SET(CPACK_DEBIAN_PACKAGE_DEPENDS ${CPACK_DEBIAN_PACKAGE_DEPENDS}livemedia-utils,)
+else()
+    set(LIVE ${CMAKE_BINARY_DIR}/live)
+    set(LIVEINCLUDE ${LIVE}/groupsock/include ${LIVE}/liveMedia/include ${LIVE}/UsageEnvironment/include ${LIVE}/BasicUsageEnvironment/include)
+    if (NOT EXISTS ${LIVE})
+        file (DOWNLOAD ${LIVE555URL} ${CMAKE_BINARY_DIR}/live555-latest.tar.gz )
+        EXECUTE_PROCESS(COMMAND ${CMAKE_COMMAND} -E tar xvf ${CMAKE_BINARY_DIR}/live555-latest.tar.gz  RESULT_VARIABLE unpack_result)
+        if(NOT unpack_result STREQUAL "0")
+            message(FATAL_ERROR "Fetching and compiling live555 failed!")
+        endif()
+    endif()
+    FILE(GLOB LIVESOURCE ${LIVE}/groupsock/*.c* ${LIVE}/liveMedia/*.c* ${LIVE}/UsageEnvironment/*.c* ${LIVE}/BasicUsageEnvironment/*.c*)
+    add_definitions(${LIVE555CFLAGS})
+endif()
+
+# librtsp
+aux_source_directory(src SRC_FILES)
+add_library (libv4l2rtspserver STATIC ${LIVESOURCE} ${SRC_FILES})	
+target_include_directories(libv4l2rtspserver PUBLIC inc ${LIVEINCLUDE})
+target_link_libraries (${PROJECT_NAME} libv4l2rtspserver) 
+
+#ALSA
+if (ALSA)
+find_package(ALSA QUIET)
+if (ALSA_LIBRARY)
+	message(STATUS "Alsa available")
+	add_definitions(-DHAVE_ALSA)
+    target_link_libraries (${PROJECT_NAME} ${ALSA_LIBRARY}) 
+	
+	SET(CPACK_DEBIAN_PACKAGE_DEPENDS ${CPACK_DEBIAN_PACKAGE_DEPENDS}libasound2,)	
+endif (ALSA_LIBRARY)
+endif()
+
 # v4l2wrapper
 EXEC_PROGRAM("git submodule update --init")
 aux_source_directory(v4l2wrapper/src LIBSRC_FILES)
 include_directories("v4l2wrapper/inc")
 add_library(v4l2wrapper STATIC ${LIBSRC_FILES})
 target_link_libraries (${PROJECT_NAME} v4l2wrapper) 
-
-# live555
-set(LIVE ${CMAKE_BINARY_DIR}/live)
-set(LIVEINCLUDE ${LIVE}/groupsock/include ${LIVE}/liveMedia/include ${LIVE}/UsageEnvironment/include ${LIVE}/BasicUsageEnvironment/include)
-if (NOT EXISTS ${LIVE})
-    file (DOWNLOAD ${LIVE555URL} ${CMAKE_BINARY_DIR}/live555-latest.tar.gz )
-    EXECUTE_PROCESS(COMMAND ${CMAKE_COMMAND} -E tar xvf ${CMAKE_BINARY_DIR}/live555-latest.tar.gz  RESULT_VARIABLE unpack_result)
-    if(NOT unpack_result STREQUAL "0")
-        message(FATAL_ERROR "Fetching and compiling live555 failed!")
-    endif()
-endif()
-FILE(GLOB LIVESOURCE ${LIVE}/groupsock/*.c* ${LIVE}/liveMedia/*.c* ${LIVE}/UsageEnvironment/*.c* ${LIVE}/BasicUsageEnvironment/*.c*)
-add_definitions(${LIVE555CFLAGS})
-
-# librtsp
-aux_source_directory(src SRC_FILES)
-add_library (libv4l2rtspserver STATIC ${LIVESOURCE} ${SRC_FILES})	
-target_include_directories(libv4l2rtspserver PUBLIC ${LIVEINCLUDE} inc)
-target_link_libraries (${PROJECT_NAME} libv4l2rtspserver) 
 
 #testing
 enable_testing()
